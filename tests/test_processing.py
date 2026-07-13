@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from blender_data_pipeline.data import Frame
-from blender_data_pipeline.processing import mapping_limits, normalize, opacity, sample_slice
+from blender_data_pipeline.processing import global_amplitude_scale, mapping_limits, normalize, opacity, sample_slice, signed_shell_densities
 
 
 def frame(values):
@@ -34,6 +34,19 @@ def test_signed_symmetric_color_and_magnitude_opacity():
     values = np.array([-2, -1, 0, 1, 2])
     assert np.allclose(normalize(values, low, high, mapping), [0, 0.25, 0.5, 0.75, 1])
     assert np.allclose(opacity(values, low, high, mapping), [1, 0.5, 0, 0.5, 1])
+
+
+def test_explicit_color_range_does_not_reduce_opacity_or_shells():
+    mapping = {"mode": "linear", "range": "explicit", "minimum": -2, "maximum": 2, "transparent_value": 0.0}
+    frames = [frame(np.array([[[-1.0, 0.0, 1.0]]]))]
+    low, high = mapping_limits(frames, mapping)
+    scale = global_amplitude_scale(frames)
+    values = frames[0].field.ravel()
+    assert np.allclose(normalize(values, low, high, mapping), [0.25, 0.5, 0.75])
+    assert np.allclose(opacity(values, low, high, mapping, scale), [1.0, 0.0, 1.0])
+    positive, negative = signed_shell_densities(values, 0.0, scale)
+    assert np.allclose(positive, [0.0, 0.0, 1.0])
+    assert np.allclose(negative, [1.0, 0.0, 0.0])
 
 
 def test_log_rejects_symmetric_signed_range():

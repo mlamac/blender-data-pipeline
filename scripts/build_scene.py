@@ -30,13 +30,19 @@ def rgba(value):
     return tuple(result[:4])
 
 
-def material_surface(name, color, emission=0.0):
+def material_surface(name, color, roughness=0.55, specular=0.5, coat_weight=0.0, emission=0.0):
     material = bpy.data.materials.new(name)
     material.diffuse_color = rgba(color)
     material.use_nodes = True
     principled = material.node_tree.nodes.get("Principled BSDF")
     principled.inputs["Base Color"].default_value = rgba(color)
-    principled.inputs["Roughness"].default_value = 0.55
+    principled.inputs["Roughness"].default_value = roughness
+    specular_input = principled.inputs.get("Specular IOR Level") or principled.inputs.get("Specular")
+    if specular_input:
+        specular_input.default_value = specular
+    coat_input = principled.inputs.get("Coat Weight") or principled.inputs.get("Clearcoat")
+    if coat_input:
+        coat_input.default_value = coat_weight
     if emission:
         emission_input = principled.inputs.get("Emission Color") or principled.inputs.get("Emission")
         emission_input.default_value = rgba(color)
@@ -60,13 +66,14 @@ def curve_segments(name, segments, material, radius):
     return obj
 
 
-def text_object(name, body, location, size, material, align="CENTER"):
+def text_object(name, body, location, size, material, font, align="CENTER"):
     curve = bpy.data.curves.new(name, "FONT")
     curve.body = body
     curve.align_x = align
     curve.align_y = "CENTER"
     curve.size = size
     curve.extrude = size * 0.008
+    curve.font = font
     obj = bpy.data.objects.new(name, curve)
     obj.location = location
     curve.materials.append(material)
@@ -86,20 +93,28 @@ def create_box(bounds, material):
     return curve_segments("Domain_Wireframe", segments, material, max(xmax - xmin, ymax - ymin, zmax - zmin) * 0.006)
 
 
-def create_volume(manifest, root, bounds):
-    volume_data = bpy.data.volumes.new("Density_VDB")
-    absolute = root / manifest["vdb_files"][0]
-    volume_data.filepath = str(absolute)
-    volume_data.is_sequence = manifest["frame_count"] > 1
-    volume_data.frame_start = 1
-    volume_data.frame_duration = manifest["frame_count"]
-    volume_data.sequence_mode = "CLIP"
-    obj = bpy.data.objects.new("Density_Volume", volume_data)
-    bpy.context.collection.objects.link(obj)
+def volume_transform(obj, manifest, bounds):
     xmin, xmax, ymin, ymax, zmin, zmax = bounds
     shape = manifest["shape"]
     obj.scale = ((xmax - xmin) / max(shape[0] - 1, 1), (ymax - ymin) / max(shape[1] - 1, 1), (zmax - zmin) / max(shape[2] - 1, 1))
     obj.location = (xmin, ymin, zmin)
+
+
+def sequence_volume(name, first_file, manifest, root):
+    volume_data = bpy.data.volumes.new(f"{name}_VDB")
+    volume_data.filepath = str(root / first_file)
+    volume_data.is_sequence = manifest["frame_count"] > 1
+    volume_data.frame_start = 1
+    volume_data.frame_duration = manifest["frame_count"]
+    volume_data.sequence_mode = "CLIP"
+    obj = bpy.data.objects.new(name, volume_data)
+    bpy.context.collection.objects.link(obj)
+    return obj, volume_data
+
+
+def create_volume(manifest, root, bounds):
+    obj, volume_data = sequence_volume("Density_Volume", manifest["vdb_files"][0], manifest, root)
+    volume_transform(obj, manifest, bounds)
     material = bpy.data.materials.new("Density_Volume_Material")
     material.use_nodes = True
     nodes = material.node_tree.nodes
@@ -109,7 +124,10 @@ def create_volume(manifest, root, bounds):
     info = nodes.new("ShaderNodeVolumeInfo")
     multiply = nodes.new("ShaderNodeMath")
     multiply.operation = "MULTIPLY"
-    multiply.inputs[1].default_value = float(manifest["volume"]["density_scale"])
+    density_scale = float(manifest["volume"]["density_scale"])
+    if manifest.get("shells", {}).get("enabled", False):
+        density_scale *= float(manifest["shells"].get("volume_density_multiplier", 0.5))
+    multiply.inputs[1].default_value = density_scale
     links = material.node_tree.links
     links.new(info.outputs["Density"], multiply.inputs[0])
     links.new(info.outputs["Color"], principled.inputs["Color"])
@@ -117,6 +135,43 @@ def create_volume(manifest, root, bounds):
     links.new(principled.outputs["Volume"], output.inputs["Volume"])
     volume_data.materials.append(material)
     return obj, volume_data
+
+
+def create_shells(manifest, root, bounds):
+    settings = manifest.get("shells", {})
+    if not settings.get("enabled", False):
+        return []
+    result = []
+    definitions = (
+        ("Positive", settings["positive_files"][0], settings["positive_color"]),
+        ("Negative", settings["negative_files"][0], settings["negative_color"]),
+    )
+    for sign, first_file, color in definitions:
+        source, volume_data = sequence_volume(f"{sign}_Shell_Source", first_file, manifest, root)
+        volume_transform(source, manifest, bounds)
+        source.hide_render = True
+        source.hide_select = True
+        source.display_type = "WIRE"
+        mesh = bpy.data.meshes.new(f"{sign}_Shell_Mesh")
+        surface = bpy.data.objects.new(f"{sign}_Shell", mesh)
+        bpy.context.collection.objects.link(surface)
+        material = material_surface(
+            f"{sign}_Shell_Material",
+            color,
+            roughness=float(settings.get("roughness", 0.28)),
+            specular=0.5,
+            coat_weight=float(settings.get("coat_weight", 0.15)),
+        )
+        mesh.materials.append(material)
+        modifier = surface.modifiers.new(f"{sign}_Volume_to_Mesh", "VOLUME_TO_MESH")
+        modifier.object = source
+        modifier.grid_name = "density"
+        modifier.threshold = float(settings.get("isovalue", 0.25))
+        modifier.resolution_mode = "GRID"
+        modifier.adaptivity = 0.02
+        modifier.use_smooth_shade = True
+        result.append((volume_data, first_file))
+    return result
 
 
 def image_material(name, image_path, frame_count):
@@ -214,37 +269,41 @@ def create_colorbar(manifest, root, bounds):
     return image, relative
 
 
-def create_annotations(manifest, bounds, camera):
-    annotation = material_surface("Annotation_Material", manifest["scene"]["annotation_color"], 0.0)
+def create_annotations(manifest, bounds, camera, font):
+    annotation = material_surface("Annotation_Material", manifest["scene"]["annotation_color"], roughness=1.0, specular=0.0)
     xmin, xmax, ymin, ymax, zmin, zmax = bounds
     size = max(xmax - xmin, ymax - ymin, zmax - zmin)
+    label_size = 0.6
+    time_size = 0.4
     labels = manifest["labels"]
     objects = [
-        text_object("Axis_X", labels["x"], ((xmin + xmax) / 2, ymin - 0.12 * size, zmin - 0.07 * size), 0.09 * size, annotation),
-        text_object("Axis_Y", labels["y"], (xmax + 0.11 * size, (ymin + ymax) / 2, zmin - 0.07 * size), 0.09 * size, annotation),
-        text_object("Axis_Z", labels["z"], (xmin - 0.10 * size, ymin, (zmin + zmax) / 2), 0.09 * size, annotation),
+        text_object("Axis_X", labels["x"], ((xmin + xmax) / 2, ymin - 0.18 * size, zmin - 0.12 * size), label_size, annotation, font),
+        text_object("Axis_Y", labels["y"], (xmax + 0.18 * size, (ymin + ymax) / 2, zmin - 0.12 * size), label_size, annotation, font),
+        text_object("Axis_Z", labels["z"], (xmin - 0.17 * size, ymin, (zmin + zmax) / 2), label_size, annotation, font),
     ]
     if labels.get("title"):
-        objects.append(text_object("Title", labels["title"], ((xmin + xmax) / 2, (ymin + ymax) / 2, zmax + 0.28 * size), 0.10 * size, annotation))
+        objects.append(text_object("Title", labels["title"], ((xmin + xmax) / 2, (ymin + ymax) / 2, zmax + 0.40 * size), label_size, annotation, font))
     # Endpoint tick labels preserve physical coordinate values even in equal-cube mode.
     for axis_i, axis in enumerate("xyz"):
         scene_min, scene_max = bounds[2 * axis_i : 2 * axis_i + 2]
         data_min, data_max = manifest["extents"][axis]
         for suffix, scene_value, data_value in (("min", scene_min, data_min), ("max", scene_max, data_max)):
-            location = [xmin - 0.055 * size, ymin - 0.055 * size, zmin - 0.055 * size]
-            location[axis_i] = scene_value
-            if axis == "y":
-                location[0] = xmax + 0.055 * size
-            objects.append(text_object(f"Tick_{axis}_{suffix}", f"{data_value:.3g}", location, 0.045 * size, annotation))
+            if axis == "x":
+                location = [scene_value, ymin - 0.18 * size, zmin - 0.10 * size]
+            elif axis == "y":
+                location = [xmax + 0.18 * size, scene_value, zmin - 0.10 * size]
+            else:
+                location = [xmin - 0.16 * size, ymin - 0.04 * size, scene_value]
+            objects.append(text_object(f"Tick_{axis}_{suffix}", f"{data_value:.3g}", location, label_size, annotation, font))
     bar_x, bar_y = xmax + 0.28 * size, ymax
     low, high = manifest["value_limits"]
     objects.extend([
-        text_object("Colorbar_Min", f"{low:.3g}", (bar_x + 0.07 * size, bar_y, zmin), 0.045 * size, annotation, "LEFT"),
-        text_object("Colorbar_Max", f"{high:.3g}", (bar_x + 0.07 * size, bar_y, zmax), 0.045 * size, annotation, "LEFT"),
-        text_object("Colorbar_Label", labels["field"], (bar_x, bar_y, zmax + 0.09 * size), 0.055 * size, annotation),
+        text_object("Colorbar_Min", f"{low:.3g}", (bar_x + 0.09 * size, bar_y, zmin), label_size, annotation, font, "LEFT"),
+        text_object("Colorbar_Max", f"{high:.3g}", (bar_x + 0.09 * size, bar_y, zmax), label_size, annotation, font, "LEFT"),
+        text_object("Colorbar_Label", labels["field"], (bar_x, bar_y, zmax + 0.16 * size), label_size, annotation, font),
     ])
     for index, time in enumerate(manifest["times"], 1):
-        obj = text_object(f"Time_{index:04d}", f"{labels['time']} = {time:.5g}", (xmax, ymax, zmax + 0.12 * size), 0.055 * size, annotation)
+        obj = text_object(f"Time_{index:04d}", f"{labels['time']} = {time:.2f}", (xmin - 0.05 * size, ymin, zmax + 0.24 * size), time_size, annotation, font, "LEFT")
         obj.hide_render = index != 1
         obj.keyframe_insert("hide_render", frame=max(1, index - 1))
         obj.hide_render = False
@@ -299,10 +358,15 @@ def build(manifest, root, output, preview):
     world.use_nodes = True
     world.node_tree.nodes["Background"].inputs["Color"].default_value = rgba(manifest["scene"]["background"])
     world.node_tree.nodes["Background"].inputs["Strength"].default_value = float(manifest["scene"].get("background_strength", 1.0))
+    font = bpy.data.fonts.load(str(root / manifest["font_file"]), check_existing=False)
+    # Pack only the font before loading VDB/PNG assets. The scientific data stay
+    # external and relative, while typography remains portable to Windows.
+    bpy.ops.file.pack_all()
     bounds = scene_dimensions(manifest)
-    wire = material_surface("Wireframe_Material", manifest["scene"]["wire_color"], 0.2)
+    wire = material_surface("Wireframe_Material", manifest["scene"]["wire_color"], roughness=1.0, specular=0.0)
     create_box(bounds, wire)
     volume_obj, volume_data = create_volume(manifest, root, bounds)
+    shell_volumes = create_shells(manifest, root, bounds)
     images = create_slices(manifest, root, bounds)
     images.append(create_colorbar(manifest, root, bounds))
     camera_data = bpy.data.cameras.new("Camera")
@@ -314,7 +378,7 @@ def build(manifest, root, output, preview):
     camera.data.lens = float(manifest["scene"]["lens_mm"])
     point_camera(camera)
     scene.camera = camera
-    create_annotations(manifest, bounds, camera)
+    create_annotations(manifest, bounds, camera, font)
     bpy.ops.object.light_add(type="AREA", location=(size * 2, -size * 2, size * 2.5))
     light = bpy.context.object
     light.name = "Key_Light"
@@ -327,6 +391,8 @@ def build(manifest, root, output, preview):
     output.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output))
     volume_data.filepath = "//" + manifest["vdb_files"][0].replace("\\", "/")
+    for shell_data, relative in shell_volumes:
+        shell_data.filepath = "//" + relative.replace("\\", "/")
     for image, relative in images:
         image.filepath = "//" + relative.replace("\\", "/")
     scene["bdp_manifest"] = "//manifest.json"

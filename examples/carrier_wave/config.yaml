@@ -26,12 +26,17 @@ output:
   archive: true
 mapping:
   mode: linear
-  range: global
-  symmetric: true
+  range: explicit
+  minimum: -2.0
+  maximum: 2.0
   colormap: seismic
 volume:
   density_scale: 1.5
   cutoff: 0.03
+shells:
+  enabled: true
+  isovalue: 0.25
+  volume_density_multiplier: 0.5
 geometry:
   aspect_mode: preserve_physical_aspect
   box_size: 4.0
@@ -49,6 +54,6 @@ labels:
   x: x
   y: y
   z: z
-  field: field amplitude
+  field: E / E0
   time: phase [cycles]
   title: Gaussian-envelope carrier wave

@@ -34,17 +34,18 @@ def generate_example(output: Path, frames: int) -> None:
     config = {
         "input": {"files": names, "field_key": "field"},
         "output": {"directory": "build", "archive": True},
-        "mapping": {"mode": "linear", "range": "global", "symmetric": True, "colormap": "seismic"},
+        "mapping": {"mode": "linear", "range": "explicit", "minimum": -2.0, "maximum": 2.0, "colormap": "seismic"},
         "volume": {"density_scale": 1.5, "cutoff": 0.03},
+        "shells": {"enabled": True, "isovalue": 0.25, "volume_density_multiplier": 0.5},
         "geometry": {"aspect_mode": "preserve_physical_aspect", "box_size": 4.0},
         "slices": [
             {"axis": "x", "coordinate": 0.0, "face": "min"},
             {"axis": "y", "coordinate": 0.0, "face": "max"},
             {"axis": "z", "coordinate": 0.0, "face": "min"},
         ],
-        "labels": {"x": "x", "y": "y", "z": "z", "field": "field amplitude", "time": "phase [cycles]", "title": "Gaussian-envelope carrier wave"},
+        "labels": {"x": "x", "y": "y", "z": "z", "field": "E / E0", "time": "phase [cycles]", "title": "Gaussian-envelope carrier wave"},
     }
-    (output / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    (output / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def cmd_validate(config_path: str) -> int:
@@ -89,7 +90,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="bdp", description="Prepare volumetric NumPy data for Blender")
     sub = result.add_subparsers(dest="command", required=True)
-    example = sub.add_parser("example", help="generate Gaussian example data and configuration")
+    example = sub.add_parser("example", help="generate the Gaussian-envelope carrier-wave example")
     example.add_argument("--output", type=Path, default=Path("examples/carrier_wave"))
     example.add_argument("--frames", type=int, default=20)
     validate = sub.add_parser("validate", help="validate a dataset and configuration")

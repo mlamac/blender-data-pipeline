@@ -16,7 +16,10 @@ axes are accepted. All files in a series must have identical axes and shape, and
 their `time` values must increase in filename/configuration order. Values and
 coordinates must not contain NaN or infinity.
 
-Positive density and signed scalar fields are both supported. The key name
+Positive density and signed scalar fields are both supported. Signed fields
+automatically produce separate positive and negative isosurface sequences;
+positive-only density produces an empty negative sequence without special-case
+input formatting. The key name
 `field` can be changed with `input.field_key`. Coordinate units and
 display labels belong in YAML rather than the NPZ so the numeric contract remains
 simple and independent of EPOCH/SDF.

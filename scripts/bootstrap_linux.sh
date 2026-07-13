@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-  echo "Activate ~/picenv first: source ~/picenv/bin/activate" >&2
+  echo "Activate a Python virtual environment first (for example: source .venv/bin/activate)" >&2
   exit 2
 fi
 

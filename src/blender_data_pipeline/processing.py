@@ -74,15 +74,36 @@ def normalize(values: np.ndarray, low: float, high: float, mapping: dict[str, An
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
-def opacity(values: np.ndarray, low: float, high: float, mapping: dict[str, Any]) -> np.ndarray:
+def opacity(
+    values: np.ndarray,
+    low: float,
+    high: float,
+    mapping: dict[str, Any],
+    amplitude_scale: float | None = None,
+) -> np.ndarray:
     values = np.asarray(values, dtype=np.float32)
     if mapping.get("mode") == "log10":
         return normalize(values, low, high, mapping)
     transparent = float(mapping.get("transparent_value", 0.0))
-    scale = max(abs(low - transparent), abs(high - transparent))
+    scale = amplitude_scale if amplitude_scale is not None else max(abs(low - transparent), abs(high - transparent))
     if scale <= 0:
         raise ValueError("Opacity scale is zero; adjust mapping limits or transparent_value")
     return np.clip(np.abs(values - transparent) / scale, 0.0, 1.0).astype(np.float32)
+
+
+def global_amplitude_scale(frames: list[Frame], transparent_value: float = 0.0) -> float:
+    scale = max(float(np.max(np.abs(frame.field - transparent_value))) for frame in frames)
+    if not np.isfinite(scale) or scale <= 0:
+        # An all-transparent field is valid: it simply produces empty VDB grids.
+        return 1.0
+    return scale
+
+
+def signed_shell_densities(values: np.ndarray, transparent_value: float, amplitude_scale: float) -> tuple[np.ndarray, np.ndarray]:
+    if amplitude_scale <= 0:
+        raise ValueError("Shell amplitude scale must be positive")
+    signed = np.asarray((values - transparent_value) / amplitude_scale, dtype=np.float32)
+    return np.clip(signed, 0.0, 1.0), np.clip(-signed, 0.0, 1.0)
 
 
 def sample_slice(field: np.ndarray, axes: tuple[np.ndarray, np.ndarray, np.ndarray], axis: str, coordinate: float) -> np.ndarray:
@@ -147,20 +168,30 @@ def _slice_specs(cfg: dict[str, Any], frame: Frame) -> list[dict[str, Any]]:
 
 def prepare_bundle(cfg: dict[str, Any], frames: list[Frame], output: Path, system_python: str) -> Path:
     assets = output / "assets"
-    vdb_dir, slice_dir, intermediate = assets / "vdb", assets / "slices", output / ".intermediate"
-    for path in (vdb_dir, slice_dir, intermediate):
+    vdb_dir, slice_dir, font_dir, intermediate = assets / "vdb", assets / "slices", assets / "fonts", output / ".intermediate"
+    for path in (vdb_dir, slice_dir, font_dir, intermediate):
         path.mkdir(parents=True, exist_ok=True)
     low, high = mapping_limits(frames, cfg["mapping"])
+    transparent = float(cfg["mapping"].get("transparent_value", 0.0))
+    amplitude_scale = global_amplitude_scale(frames, transparent)
     cutoff = float(cfg["volume"].get("cutoff", 0.001))
     if cutoff < 0 or cutoff >= 1:
         raise ValueError("volume.cutoff must be in [0, 1)")
     specs = _slice_specs(cfg, frames[0])
+    shells = cfg["shells"]
+    shell_enabled = bool(shells.get("enabled", True))
+    isovalue = float(shells.get("isovalue", 0.25))
+    if not 0 < isovalue < 1:
+        raise ValueError("shells.isovalue must be in (0, 1)")
+    density_multiplier = float(shells.get("volume_density_multiplier", 0.5))
+    if not 0 <= density_multiplier <= 1:
+        raise ValueError("shells.volume_density_multiplier must be in [0, 1]")
     root = Path(__file__).resolve().parents[2]
     writer = root / "scripts" / "write_vdb.py"
     slice_sequences: dict[str, list[str]] = {spec["axis"]: [] for spec in specs}
     for number, frame in enumerate(frames, 1):
         mapped = normalize(frame.field, low, high, cfg["mapping"])
-        alpha = opacity(frame.field, low, high, cfg["mapping"])
+        alpha = opacity(frame.field, low, high, cfg["mapping"], amplitude_scale)
         alpha[alpha < cutoff] = 0.0
         cmap = matplotlib.colormaps[cfg["mapping"]["colormap"]]
         color = np.asarray(cmap(mapped)[..., :3], dtype=np.float32)
@@ -170,34 +201,59 @@ def prepare_bundle(cfg: dict[str, Any], frames: list[Frame], output: Path, syste
         np.save(density_path, alpha)
         np.save(color_path, color)
         vdb_path = vdb_dir / f"density_{number:04d}.vdb"
-        subprocess.run([system_python, str(writer), str(density_path), str(color_path), str(vdb_path)], check=True)
+        command = [system_python, str(writer), str(density_path), str(color_path), str(vdb_path)]
+        if shell_enabled:
+            positive_path = intermediate / f"positive_{number:04d}.npy"
+            negative_path = intermediate / f"negative_{number:04d}.npy"
+            positive_vdb = vdb_dir / f"positive_{number:04d}.vdb"
+            negative_vdb = vdb_dir / f"negative_{number:04d}.vdb"
+            positive, negative = signed_shell_densities(frame.field, transparent, amplitude_scale)
+            np.save(positive_path, positive)
+            np.save(negative_path, negative)
+            command.extend(["--positive", str(positive_path), str(positive_vdb), "--negative", str(negative_path), str(negative_vdb)])
+        subprocess.run(command, check=True)
         for spec in specs:
             raw_plane = sample_slice(frame.field, (frame.x, frame.y, frame.z), spec["axis"], spec["coordinate"])
             plane = normalize(raw_plane, low, high, cfg["mapping"])
-            plane_alpha = opacity(raw_plane, low, high, cfg["mapping"])
+            plane_alpha = opacity(raw_plane, low, high, cfg["mapping"], amplitude_scale)
             image_path = slice_dir / f"{spec['axis']}_{number:04d}.png"
             rgba_image(plane, plane_alpha, cfg["mapping"]["colormap"]).save(image_path)
             slice_sequences[spec["axis"]].append(str(image_path.relative_to(output)))
     colorbar_path = assets / "colorbar.png"
     colorbar_image(cfg["mapping"]["colormap"]).save(colorbar_path)
+    matplotlib_fonts = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+    font_source = matplotlib_fonts / "STIXGeneral.ttf"
+    license_source = matplotlib_fonts / "LICENSE_STIX"
+    if not font_source.is_file() or not license_source.is_file():
+        raise RuntimeError("Matplotlib's bundled STIX General font and license were not found")
+    font_path = font_dir / font_source.name
+    shutil.copy2(font_source, font_path)
+    shutil.copy2(license_source, font_dir / license_source.name)
     first = frames[0]
     extents = {axis: [float(getattr(first, axis)[0]), float(getattr(first, axis)[-1])] for axis in "xyz"}
     steps = {axis: float(np.diff(getattr(first, axis))[0]) for axis in "xyz"}
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "frame_count": len(frames),
         "times": [frame.time if frame.time is not None else float(i) for i, frame in enumerate(frames)],
         "shape": list(first.field.shape),
         "extents": extents,
         "steps": steps,
         "value_limits": [low, high],
+        "amplitude_scale": amplitude_scale,
         "mapping": cfg["mapping"],
         "volume": cfg["volume"],
+        "shells": {
+            **shells,
+            "positive_files": [f"assets/vdb/positive_{i:04d}.vdb" for i in range(1, len(frames) + 1)] if shell_enabled else [],
+            "negative_files": [f"assets/vdb/negative_{i:04d}.vdb" for i in range(1, len(frames) + 1)] if shell_enabled else [],
+        },
         "geometry": cfg["geometry"],
         "labels": cfg["labels"],
         "scene": cfg["scene"],
         "color_stops": color_stops(cfg["mapping"]["colormap"]),
         "colorbar_file": str(colorbar_path.relative_to(output)),
+        "font_file": str(font_path.relative_to(output)),
         "vdb_files": [f"assets/vdb/density_{i:04d}.vdb" for i in range(1, len(frames) + 1)],
         "slices": [{**spec, "files": slice_sequences[spec["axis"]]} for spec in specs],
         "source_files": [frame.path.name for frame in frames],
