@@ -1,0 +1,34 @@
+input:
+  files:
+  - gaussian_0001.npz
+  field_key: field
+output:
+  directory: build
+  archive: true
+mapping:
+  mode: linear
+  range: global
+  colormap: inferno
+volume:
+  density_scale: 5.0
+  cutoff: 0.005
+geometry:
+  aspect_mode: preserve_physical_aspect
+  box_size: 4.0
+slices:
+- axis: x
+  coordinate: 0.0
+  face: min
+- axis: y
+  coordinate: 0.0
+  face: min
+- axis: z
+  coordinate: 0.0
+  face: min
+labels:
+  x: x
+  y: y
+  z: z
+  field: density
+  time: t
+  title: 3D Gaussian density

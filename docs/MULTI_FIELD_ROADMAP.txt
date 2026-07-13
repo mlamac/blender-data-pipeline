@@ -1,0 +1,10 @@
+Future multiple-field upgrade path
+==================================
+
+Keep the current coordinate/time contract and allow several named 3D arrays in
+each NPZ. Configuration would declare each field's key, mapping, colormap,
+opacity, VDB grid/object, and optional slices. Shared coordinates and one global
+timeline avoid duplicate metadata. Scene collections should isolate fields so
+users can enable combinations. Before adding this, decide whether overlapping
+volumes should be composited in one multi-grid VDB or separate volume objects;
+the latter is simpler to edit while the former can render more efficiently.
