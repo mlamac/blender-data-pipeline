@@ -5,7 +5,7 @@ must contain these arrays:
 
 | Key | Type and shape | Meaning |
 | --- | --- | --- |
-| `field` | finite, non-negative numeric `(nx, ny, nz)` | Density sampled in `(x, y, z)` order |
+| `field` | finite numeric `(nx, ny, nz)` | Scalar field sampled in `(x, y, z)` order |
 | `x` | numeric `(nx,)` | Physical x coordinates |
 | `y` | numeric `(ny,)` | Physical y coordinates |
 | `z` | numeric `(nz,)` | Physical z coordinates |
@@ -16,7 +16,8 @@ axes are accepted. All files in a series must have identical axes and shape, and
 their `time` values must increase in filename/configuration order. Values and
 coordinates must not contain NaN or infinity.
 
-The key name `field` can be changed with `input.field_key`. Coordinate units and
+Positive density and signed scalar fields are both supported. The key name
+`field` can be changed with `input.field_key`. Coordinate units and
 display labels belong in YAML rather than the NPZ so the numeric contract remains
 simple and independent of EPOCH/SDF.
 

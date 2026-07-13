@@ -5,9 +5,11 @@ import os
 import bpy
 
 scene = bpy.context.scene
-scene.render.engine = "CYCLES"
-scene.cycles.samples = 4
-scene.cycles.use_denoising = False
+scene.frame_set(int(os.environ.get("BDP_SMOKE_FRAME", "1")))
+scene.render.engine = os.environ.get("BDP_SMOKE_ENGINE", "CYCLES")
+if scene.render.engine == "CYCLES":
+    scene.cycles.samples = 4
+    scene.cycles.use_denoising = False
 scene.render.resolution_x = 320
 scene.render.resolution_y = 240
 scene.render.resolution_percentage = 100

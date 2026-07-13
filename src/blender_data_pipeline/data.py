@@ -72,8 +72,6 @@ def load_frame(path: Path, field_key: str = "field") -> Frame:
         raise ValueError(f"{path}: field shape {field.shape} does not match coordinates {expected}")
     if not np.all(np.isfinite(field)):
         raise ValueError(f"{path}: field contains NaN or infinite values")
-    if np.min(field) < 0:
-        raise ValueError(f"{path}: v1 expects a non-negative density field")
     for axis_index, (_, descending) in enumerate(axes):
         if descending:
             field = np.flip(field, axis=axis_index).copy()

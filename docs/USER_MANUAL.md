@@ -22,6 +22,10 @@ the latest stable Blender 4.5 LTS Linux archive can alternatively be used from
 `~/.local/opt/blender-4.5/blender`. Blender 4.5 LTS is recommended on the Windows
 rendering machine. The exact builder version is written to `manifest.json`.
 
+Generate the included-style demonstration with `bdp example`. By default it
+creates 20 frames of a stationary 3D Gaussian envelope multiplied by a carrier
+whose phase advances along x, using a symmetric `seismic` scale.
+
 ## Prepare and validate data
 
 Follow [NUMPY_FORMAT.md](NUMPY_FORMAT.md). A minimal configuration is:
@@ -34,7 +38,9 @@ output:
 mapping:
   mode: linear              # or log10
   range: global             # or explicit with minimum/maximum
-  colormap: inferno
+  symmetric: true           # recommended for signed fields
+  transparent_value: 0.0
+  colormap: seismic
 volume:
   density_scale: 5.0
   cutoff: 0.005
@@ -42,14 +48,15 @@ geometry:
   aspect_mode: preserve_physical_aspect  # or equal_sided_cube
 slices:
   - {axis: x, coordinate: 0.0, face: min}
+  - {axis: y, coordinate: 0.0, face: max} # back face: does not hide volume
   - {axis: z, coordinate: 0.0, face: min}
 labels:
   x: "x [micrometers]"
   y: "y [micrometers]"
   z: "z [micrometers]"
-  field: "electron density"
+  field: "electric field"
   time: "t [fs]"
-  title: "EPOCH density"
+  title: "Laser pulse"
 ```
 
 There may be zero to three slices and no axis may occur twice. `coordinate` is
@@ -57,12 +64,21 @@ where the data are sampled; `face` is where that image is displayed. Therefore
 a `z: 0` slice can be sampled through the center but displayed on the bottom
 `z-min` face without cutting through the volume.
 
-`linear` maps the selected minimum and maximum directly into 0..1. `log10`
-reveals weaker structures across orders of magnitude and accepts `log_floor`.
-Both mappings keep zero transparent. `density_scale` changes volume opacity
-without changing the scientific color scale. `cutoff` sparsifies almost-empty
-voxels after normalization. Optional `percentiles: [1, 99.8]` clips outliers;
-for exact comparisons prefer explicit or un-clipped global limits.
+`linear` maps the selected minimum and maximum directly into 0..1. With
+`symmetric: true`, limits become `[-max(abs(field)), +max(abs(field))]`, which is
+appropriate for diverging maps such as `seismic`. Color represents signed value
+while transparency follows distance from `transparent_value`, normally zero.
+`log10` reveals weaker positive structures across orders of magnitude and accepts
+`log_floor`; it cannot be combined with a symmetric signed range. `density_scale`
+changes volume opacity without changing the scientific color scale. `cutoff`
+sparsifies almost-empty voxels after normalization. Optional
+`percentiles: [1, 99.8]` clips outliers; for exact comparisons prefer explicit or
+un-clipped global limits. The continuous color bar is generated as a PNG and uses
+the same normalization and Matplotlib colormap as the volume and slices.
+
+The default publication theme has a white world background with black wireframe,
+ticks, and annotations. Override `scene.background`, `scene.wire_color`, and
+`scene.annotation_color` with RGBA arrays when a dark or custom theme is needed.
 
 Validate, then build:
 

@@ -1,0 +1,54 @@
+input:
+  files:
+  - carrier_0001.npz
+  - carrier_0002.npz
+  - carrier_0003.npz
+  - carrier_0004.npz
+  - carrier_0005.npz
+  - carrier_0006.npz
+  - carrier_0007.npz
+  - carrier_0008.npz
+  - carrier_0009.npz
+  - carrier_0010.npz
+  - carrier_0011.npz
+  - carrier_0012.npz
+  - carrier_0013.npz
+  - carrier_0014.npz
+  - carrier_0015.npz
+  - carrier_0016.npz
+  - carrier_0017.npz
+  - carrier_0018.npz
+  - carrier_0019.npz
+  - carrier_0020.npz
+  field_key: field
+output:
+  directory: build
+  archive: true
+mapping:
+  mode: linear
+  range: global
+  symmetric: true
+  colormap: seismic
+volume:
+  density_scale: 1.5
+  cutoff: 0.03
+geometry:
+  aspect_mode: preserve_physical_aspect
+  box_size: 4.0
+slices:
+- axis: x
+  coordinate: 0.0
+  face: min
+- axis: y
+  coordinate: 0.0
+  face: max
+- axis: z
+  coordinate: 0.0
+  face: min
+labels:
+  x: x
+  y: y
+  z: z
+  field: field amplitude
+  time: phase [cycles]
+  title: Gaussian-envelope carrier wave

@@ -21,7 +21,7 @@ slices:
   face: min
 - axis: y
   coordinate: 0.0
-  face: min
+  face: max
 - axis: z
   coordinate: 0.0
   face: min

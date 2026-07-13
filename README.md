@@ -10,12 +10,12 @@ portable Windows rendering bundle.
 ```bash
 source ~/picenv/bin/activate
 ./scripts/bootstrap_linux.sh
-bdp example --output examples/gaussian
-bdp validate examples/gaussian/config.yaml
-bdp build examples/gaussian/config.yaml --blender /usr/bin/blender
+bdp example --output examples/carrier_wave
+bdp validate examples/carrier_wave/config.yaml
+bdp build examples/carrier_wave/config.yaml --blender /usr/bin/blender
 ```
 
-The resulting `examples/gaussian/build.zip` contains `scene.blend`, VDB and
+The resulting `examples/carrier_wave/build.zip` contains `scene.blend`, VDB and
 slice sequences, a manifest, and a Windows rendering helper. See
 [the user manual](docs/USER_MANUAL.md) and
 [the NumPy format specification](docs/NUMPY_FORMAT.md) for the full workflow.

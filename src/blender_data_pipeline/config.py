@@ -18,6 +18,8 @@ DEFAULTS: dict[str, Any] = {
         "percentiles": None,
         "log_floor": None,
         "colormap": "viridis",
+        "symmetric": False,
+        "transparent_value": 0.0,
     },
     "volume": {"density_scale": 4.0, "cutoff": 0.001},
     "geometry": {"aspect_mode": "preserve_physical_aspect", "box_size": 4.0},
@@ -29,8 +31,10 @@ DEFAULTS: dict[str, Any] = {
         "preview_samples": 8,
         "camera": [7.0, -8.0, 6.0],
         "lens_mm": 52.0,
-        "background": [0.008, 0.012, 0.02, 1.0],
-        "wire_color": [0.72, 0.78, 0.88, 1.0],
+        "background": [1.0, 1.0, 1.0, 1.0],
+        "background_strength": 1.0,
+        "wire_color": [0.025, 0.025, 0.025, 1.0],
+        "annotation_color": [0.025, 0.025, 0.025, 1.0],
     },
 }
 

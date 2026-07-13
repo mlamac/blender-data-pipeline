@@ -107,23 +107,12 @@ def create_volume(manifest, root, bounds):
     output = nodes.new("ShaderNodeOutputMaterial")
     principled = nodes.new("ShaderNodeVolumePrincipled")
     info = nodes.new("ShaderNodeVolumeInfo")
-    ramp = nodes.new("ShaderNodeValToRGB")
     multiply = nodes.new("ShaderNodeMath")
     multiply.operation = "MULTIPLY"
     multiply.inputs[1].default_value = float(manifest["volume"]["density_scale"])
-    color_ramp = ramp.color_ramp
-    while len(color_ramp.elements) > 1:
-        color_ramp.elements.remove(color_ramp.elements[-1])
-    first = manifest["color_stops"][0]
-    color_ramp.elements[0].position = first[0]
-    color_ramp.elements[0].color = first[1:5]
-    for stop in manifest["color_stops"][1:]:
-        element = color_ramp.elements.new(stop[0])
-        element.color = stop[1:5]
     links = material.node_tree.links
-    links.new(info.outputs["Density"], ramp.inputs["Fac"])
     links.new(info.outputs["Density"], multiply.inputs[0])
-    links.new(ramp.outputs["Color"], principled.inputs["Color"])
+    links.new(info.outputs["Color"], principled.inputs["Color"])
     links.new(multiply.outputs[0], principled.inputs["Density"])
     links.new(principled.outputs["Volume"], output.inputs["Volume"])
     volume_data.materials.append(material)
@@ -136,6 +125,14 @@ def image_material(name, image_path, frame_count):
         image.source = "SEQUENCE"
     material = bpy.data.materials.new(name)
     material.use_nodes = True
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = "DITHERED"
+    elif hasattr(material, "blend_method"):
+        material.blend_method = "BLEND"
+    if hasattr(material, "surface_render_method") and hasattr(material, "use_transparency_overlap"):
+        material.use_transparency_overlap = False
+    if hasattr(material, "shadow_method"):
+        material.shadow_method = "NONE"
     nodes = material.node_tree.nodes
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
@@ -192,18 +189,43 @@ def create_slices(manifest, root, bounds):
     return images
 
 
+def create_colorbar(manifest, root, bounds):
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds
+    size = max(xmax - xmin, ymax - ymin, zmax - zmin)
+    center_x = xmax + 0.28 * size
+    half_width = 0.035 * size
+    y = ymax + 0.01 * size
+    vertices = [
+        (center_x - half_width, y, zmin),
+        (center_x + half_width, y, zmin),
+        (center_x + half_width, y, zmax),
+        (center_x - half_width, y, zmax),
+    ]
+    mesh = bpy.data.meshes.new("Colorbar_Mesh")
+    mesh.from_pydata(vertices, [], [(0, 1, 2, 3)])
+    uv = mesh.uv_layers.new(name="UVMap")
+    for loop, coordinate in zip(mesh.polygons[0].loop_indices, ((0, 0), (1, 0), (1, 1), (0, 1))):
+        uv.data[loop].uv = coordinate
+    obj = bpy.data.objects.new("Colorbar", mesh)
+    bpy.context.collection.objects.link(obj)
+    relative = manifest["colorbar_file"]
+    material, image = image_material("Colorbar_Material", root / relative, 1)
+    mesh.materials.append(material)
+    return image, relative
+
+
 def create_annotations(manifest, bounds, camera):
-    white = material_surface("Annotation_Material", (0.88, 0.91, 0.96, 1), 0.15)
+    annotation = material_surface("Annotation_Material", manifest["scene"]["annotation_color"], 0.0)
     xmin, xmax, ymin, ymax, zmin, zmax = bounds
     size = max(xmax - xmin, ymax - ymin, zmax - zmin)
     labels = manifest["labels"]
     objects = [
-        text_object("Axis_X", labels["x"], ((xmin + xmax) / 2, ymin - 0.12 * size, zmin - 0.07 * size), 0.09 * size, white),
-        text_object("Axis_Y", labels["y"], (xmin - 0.12 * size, (ymin + ymax) / 2, zmin - 0.07 * size), 0.09 * size, white),
-        text_object("Axis_Z", labels["z"], (xmin - 0.10 * size, ymin, (zmin + zmax) / 2), 0.09 * size, white),
+        text_object("Axis_X", labels["x"], ((xmin + xmax) / 2, ymin - 0.12 * size, zmin - 0.07 * size), 0.09 * size, annotation),
+        text_object("Axis_Y", labels["y"], (xmax + 0.11 * size, (ymin + ymax) / 2, zmin - 0.07 * size), 0.09 * size, annotation),
+        text_object("Axis_Z", labels["z"], (xmin - 0.10 * size, ymin, (zmin + zmax) / 2), 0.09 * size, annotation),
     ]
     if labels.get("title"):
-        objects.append(text_object("Title", labels["title"], ((xmin + xmax) / 2, (ymin + ymax) / 2, zmax + 0.18 * size), 0.10 * size, white))
+        objects.append(text_object("Title", labels["title"], ((xmin + xmax) / 2, (ymin + ymax) / 2, zmax + 0.28 * size), 0.10 * size, annotation))
     # Endpoint tick labels preserve physical coordinate values even in equal-cube mode.
     for axis_i, axis in enumerate("xyz"):
         scene_min, scene_max = bounds[2 * axis_i : 2 * axis_i + 2]
@@ -211,25 +233,18 @@ def create_annotations(manifest, bounds, camera):
         for suffix, scene_value, data_value in (("min", scene_min, data_min), ("max", scene_max, data_max)):
             location = [xmin - 0.055 * size, ymin - 0.055 * size, zmin - 0.055 * size]
             location[axis_i] = scene_value
-            objects.append(text_object(f"Tick_{axis}_{suffix}", f"{data_value:.3g}", location, 0.045 * size, white))
-    # Color bar is a set of emissive tiles, avoiding external texture dependencies.
-    bar_x, bar_y = xmax + 0.26 * size, ymax
-    bar_bottom, bar_height = zmin, zmax - zmin
-    stops = manifest["color_stops"]
-    for i, stop in enumerate(stops):
-        z = bar_bottom + (i + 0.5) * bar_height / len(stops)
-        bpy.ops.mesh.primitive_cube_add(location=(bar_x, bar_y, z), scale=(0.035 * size, 0.012 * size, bar_height / len(stops) * 0.51))
-        tile = bpy.context.object
-        tile.name = f"Colorbar_{i:02d}"
-        tile.data.materials.append(material_surface(f"Colorbar_Material_{i:02d}", stop[1:5], 0.4))
+            if axis == "y":
+                location[0] = xmax + 0.055 * size
+            objects.append(text_object(f"Tick_{axis}_{suffix}", f"{data_value:.3g}", location, 0.045 * size, annotation))
+    bar_x, bar_y = xmax + 0.28 * size, ymax
     low, high = manifest["value_limits"]
     objects.extend([
-        text_object("Colorbar_Min", f"{low:.3g}", (bar_x + 0.08 * size, bar_y, zmin), 0.045 * size, white, "LEFT"),
-        text_object("Colorbar_Max", f"{high:.3g}", (bar_x + 0.08 * size, bar_y, zmax), 0.045 * size, white, "LEFT"),
-        text_object("Colorbar_Label", labels["field"], (bar_x, bar_y, zmax + 0.09 * size), 0.055 * size, white),
+        text_object("Colorbar_Min", f"{low:.3g}", (bar_x + 0.07 * size, bar_y, zmin), 0.045 * size, annotation, "LEFT"),
+        text_object("Colorbar_Max", f"{high:.3g}", (bar_x + 0.07 * size, bar_y, zmax), 0.045 * size, annotation, "LEFT"),
+        text_object("Colorbar_Label", labels["field"], (bar_x, bar_y, zmax + 0.09 * size), 0.055 * size, annotation),
     ])
     for index, time in enumerate(manifest["times"], 1):
-        obj = text_object(f"Time_{index:04d}", f"{labels['time']} = {time:.5g}", (xmax, ymax, zmax + 0.08 * size), 0.055 * size, white)
+        obj = text_object(f"Time_{index:04d}", f"{labels['time']} = {time:.5g}", (xmax, ymax, zmax + 0.12 * size), 0.055 * size, annotation)
         obj.hide_render = index != 1
         obj.keyframe_insert("hide_render", frame=max(1, index - 1))
         obj.hide_render = False
@@ -273,6 +288,9 @@ def build(manifest, root, output, preview):
     scene.frame_start = 1
     scene.frame_end = manifest["frame_count"]
     scene.render.film_transparent = False
+    scene.view_settings.view_transform = "Standard"
+    if "None" in {item.name for item in scene.view_settings.bl_rna.properties["look"].enum_items}:
+        scene.view_settings.look = "None"
     if hasattr(scene, "cycles"):
         scene.cycles.samples = int(manifest["scene"]["samples"])
         scene.cycles.use_denoising = True
@@ -280,12 +298,13 @@ def build(manifest, root, output, preview):
     scene.world = world
     world.use_nodes = True
     world.node_tree.nodes["Background"].inputs["Color"].default_value = rgba(manifest["scene"]["background"])
-    world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.18
+    world.node_tree.nodes["Background"].inputs["Strength"].default_value = float(manifest["scene"].get("background_strength", 1.0))
     bounds = scene_dimensions(manifest)
     wire = material_surface("Wireframe_Material", manifest["scene"]["wire_color"], 0.2)
     create_box(bounds, wire)
     volume_obj, volume_data = create_volume(manifest, root, bounds)
     images = create_slices(manifest, root, bounds)
+    images.append(create_colorbar(manifest, root, bounds))
     camera_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", camera_data)
     bpy.context.collection.objects.link(camera)

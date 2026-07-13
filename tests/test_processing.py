@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from blender_data_pipeline.data import Frame
-from blender_data_pipeline.processing import mapping_limits, normalize, sample_slice
+from blender_data_pipeline.processing import mapping_limits, normalize, opacity, sample_slice
 
 
 def frame(values):
@@ -24,6 +25,21 @@ def test_log_zero_stays_transparent():
     mapping = {"mode": "log10", "log_floor": 1e-2}
     result = normalize(np.array([0, 1e-2, 1]), 0, 1, mapping)
     assert np.allclose(result, [0, 0, 1])
+
+
+def test_signed_symmetric_color_and_magnitude_opacity():
+    mapping = {"mode": "linear", "symmetric": True, "transparent_value": 0.0}
+    low, high = mapping_limits([frame(np.array([[[-2, 1]]]))], mapping)
+    assert (low, high) == (-2, 2)
+    values = np.array([-2, -1, 0, 1, 2])
+    assert np.allclose(normalize(values, low, high, mapping), [0, 0.25, 0.5, 0.75, 1])
+    assert np.allclose(opacity(values, low, high, mapping), [1, 0.5, 0, 0.5, 1])
+
+
+def test_log_rejects_symmetric_signed_range():
+    mapping = {"mode": "log10", "symmetric": True, "range": "global"}
+    with pytest.raises(ValueError, match="cannot use a symmetric"):
+        mapping_limits([frame(np.array([[[0, 1]]]))], mapping)
 
 
 def test_slice_interpolates_requested_coordinate_and_orientation():

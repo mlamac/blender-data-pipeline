@@ -42,8 +42,17 @@ def mapping_limits(frames: list[Frame], mapping: dict[str, Any]) -> tuple[float,
             high = float(mapping["maximum"])
     if not np.isfinite([low, high]).all() or high <= low:
         raise ValueError(f"Invalid mapping limits [{low}, {high}]")
+    if mapping.get("mode") == "log10" and mapping.get("symmetric", False):
+        raise ValueError("log10 mapping cannot use a symmetric signed range")
     if mapping.get("mode") == "log10" and high <= 0:
         raise ValueError("log10 mapping requires a positive maximum")
+    if mapping.get("mode") == "log10" and low < 0:
+        raise ValueError("log10 mapping does not support signed fields; use linear mapping")
+    if mapping.get("symmetric", False):
+        extent = max(abs(low), abs(high))
+        if extent == 0:
+            raise ValueError("Cannot create a symmetric range from an all-zero field")
+        low, high = -extent, extent
     if mapping.get("mode") not in {"linear", "log10"}:
         raise ValueError("mapping.mode must be 'linear' or 'log10'")
     return low, high
@@ -65,6 +74,17 @@ def normalize(values: np.ndarray, low: float, high: float, mapping: dict[str, An
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
+def opacity(values: np.ndarray, low: float, high: float, mapping: dict[str, Any]) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    if mapping.get("mode") == "log10":
+        return normalize(values, low, high, mapping)
+    transparent = float(mapping.get("transparent_value", 0.0))
+    scale = max(abs(low - transparent), abs(high - transparent))
+    if scale <= 0:
+        raise ValueError("Opacity scale is zero; adjust mapping limits or transparent_value")
+    return np.clip(np.abs(values - transparent) / scale, 0.0, 1.0).astype(np.float32)
+
+
 def sample_slice(field: np.ndarray, axes: tuple[np.ndarray, np.ndarray, np.ndarray], axis: str, coordinate: float) -> np.ndarray:
     index = {"x": 0, "y": 1, "z": 2}[axis]
     coordinates = axes[index]
@@ -84,14 +104,20 @@ def sample_slice(field: np.ndarray, axes: tuple[np.ndarray, np.ndarray, np.ndarr
     return np.flipud(np.asarray(plane).T)
 
 
-def rgba_image(normalized: np.ndarray, colormap: str) -> Image.Image:
+def rgba_image(normalized: np.ndarray, alpha: np.ndarray, colormap: str) -> Image.Image:
     try:
         cmap = matplotlib.colormaps[colormap]
     except KeyError as exc:
         raise ValueError(f"Unknown Matplotlib colormap '{colormap}'") from exc
     rgba = cmap(np.clip(normalized, 0.0, 1.0), bytes=True)
-    rgba[..., 3] = np.asarray(np.clip(normalized, 0, 1) * 255, dtype=np.uint8)
+    rgba[..., 3] = np.asarray(np.clip(alpha, 0, 1) * 255, dtype=np.uint8)
     return Image.fromarray(rgba, mode="RGBA")
+
+
+def colorbar_image(colormap: str, width: int = 64, height: int = 512) -> Image.Image:
+    # Image row zero is the top, so high values are placed at the top.
+    values = np.repeat(np.linspace(1.0, 0.0, height, dtype=np.float32)[:, None], width, axis=1)
+    return rgba_image(values, np.ones_like(values), colormap)
 
 
 def color_stops(colormap: str, count: int = 16) -> list[list[float]]:
@@ -134,17 +160,26 @@ def prepare_bundle(cfg: dict[str, Any], frames: list[Frame], output: Path, syste
     slice_sequences: dict[str, list[str]] = {spec["axis"]: [] for spec in specs}
     for number, frame in enumerate(frames, 1):
         mapped = normalize(frame.field, low, high, cfg["mapping"])
-        mapped[mapped < cutoff] = 0.0
-        array_path = intermediate / f"density_{number:04d}.npy"
-        np.save(array_path, mapped)
+        alpha = opacity(frame.field, low, high, cfg["mapping"])
+        alpha[alpha < cutoff] = 0.0
+        cmap = matplotlib.colormaps[cfg["mapping"]["colormap"]]
+        color = np.asarray(cmap(mapped)[..., :3], dtype=np.float32)
+        color[alpha == 0] = 0.0
+        density_path = intermediate / f"density_{number:04d}.npy"
+        color_path = intermediate / f"color_{number:04d}.npy"
+        np.save(density_path, alpha)
+        np.save(color_path, color)
         vdb_path = vdb_dir / f"density_{number:04d}.vdb"
-        subprocess.run([system_python, str(writer), str(array_path), str(vdb_path)], check=True)
+        subprocess.run([system_python, str(writer), str(density_path), str(color_path), str(vdb_path)], check=True)
         for spec in specs:
             raw_plane = sample_slice(frame.field, (frame.x, frame.y, frame.z), spec["axis"], spec["coordinate"])
             plane = normalize(raw_plane, low, high, cfg["mapping"])
+            plane_alpha = opacity(raw_plane, low, high, cfg["mapping"])
             image_path = slice_dir / f"{spec['axis']}_{number:04d}.png"
-            rgba_image(plane, cfg["mapping"]["colormap"]).save(image_path)
+            rgba_image(plane, plane_alpha, cfg["mapping"]["colormap"]).save(image_path)
             slice_sequences[spec["axis"]].append(str(image_path.relative_to(output)))
+    colorbar_path = assets / "colorbar.png"
+    colorbar_image(cfg["mapping"]["colormap"]).save(colorbar_path)
     first = frames[0]
     extents = {axis: [float(getattr(first, axis)[0]), float(getattr(first, axis)[-1])] for axis in "xyz"}
     steps = {axis: float(np.diff(getattr(first, axis))[0]) for axis in "xyz"}
@@ -162,6 +197,7 @@ def prepare_bundle(cfg: dict[str, Any], frames: list[Frame], output: Path, syste
         "labels": cfg["labels"],
         "scene": cfg["scene"],
         "color_stops": color_stops(cfg["mapping"]["colormap"]),
+        "colorbar_file": str(colorbar_path.relative_to(output)),
         "vdb_files": [f"assets/vdb/density_{i:04d}.vdb" for i in range(1, len(frames) + 1)],
         "slices": [{**spec, "files": slice_sequences[spec["axis"]]} for spec in specs],
         "source_files": [frame.path.name for frame in frames],

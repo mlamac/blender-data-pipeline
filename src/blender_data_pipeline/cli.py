@@ -22,25 +22,27 @@ def generate_example(output: Path, frames: int) -> None:
     z = np.linspace(-2.0, 2.0, 64)
     xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
     names = []
+    envelope = np.exp(-(xx**2 / (2 * 0.9**2) + yy**2 / (2 * 0.7**2) + zz**2 / (2 * 0.55**2)))
+    wavelength = 0.9
     for index in range(frames):
-        t = index / max(frames - 1, 1)
-        cx = 0.45 * np.sin(2 * np.pi * t) if frames > 1 else 0.0
-        field = np.exp(-((xx - cx) ** 2 / 0.65 + yy**2 / 1.0 + zz**2 / 0.45)).astype(np.float32)
-        name = f"gaussian_{index + 1:04d}.npz"
+        t = index / frames
+        carrier = np.cos(2 * np.pi * (xx / wavelength - t))
+        field = (envelope * carrier).astype(np.float32)
+        name = f"carrier_{index + 1:04d}.npz"
         np.savez_compressed(output / name, field=field, x=x, y=y, z=z, time=np.array(t))
         names.append(name)
     config = {
         "input": {"files": names, "field_key": "field"},
         "output": {"directory": "build", "archive": True},
-        "mapping": {"mode": "linear", "range": "global", "colormap": "inferno"},
-        "volume": {"density_scale": 5.0, "cutoff": 0.005},
+        "mapping": {"mode": "linear", "range": "global", "symmetric": True, "colormap": "seismic"},
+        "volume": {"density_scale": 1.5, "cutoff": 0.03},
         "geometry": {"aspect_mode": "preserve_physical_aspect", "box_size": 4.0},
         "slices": [
             {"axis": "x", "coordinate": 0.0, "face": "min"},
-            {"axis": "y", "coordinate": 0.0, "face": "min"},
+            {"axis": "y", "coordinate": 0.0, "face": "max"},
             {"axis": "z", "coordinate": 0.0, "face": "min"},
         ],
-        "labels": {"x": "x", "y": "y", "z": "z", "field": "density", "time": "t", "title": "3D Gaussian density"},
+        "labels": {"x": "x", "y": "y", "z": "z", "field": "field amplitude", "time": "phase [cycles]", "title": "Gaussian-envelope carrier wave"},
     }
     (output / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
@@ -88,8 +90,8 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="bdp", description="Prepare volumetric NumPy data for Blender")
     sub = result.add_subparsers(dest="command", required=True)
     example = sub.add_parser("example", help="generate Gaussian example data and configuration")
-    example.add_argument("--output", type=Path, default=Path("examples/gaussian"))
-    example.add_argument("--frames", type=int, default=1)
+    example.add_argument("--output", type=Path, default=Path("examples/carrier_wave"))
+    example.add_argument("--frames", type=int, default=20)
     validate = sub.add_parser("validate", help="validate a dataset and configuration")
     validate.add_argument("config")
     build = sub.add_parser("build", help="build Blender scene and portable bundle")
